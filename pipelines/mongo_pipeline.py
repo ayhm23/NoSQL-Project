@@ -344,6 +344,10 @@ class MongoPipeline(BasePipeline):
         )
         logger.info("Q2 returned %d rows", len(results["q2_top_resources"]))
 
+        # debug
+        if results["q2_top_resources"]:
+            logger.info("Q2 sample row keys: %s", list(results["q2_top_resources"][0].keys()))
+
         # Q3 — two-pass, Python-side join
         logger.info("Running Q3 — Hourly Error Analysis")
         results["q3_hourly_errors"] = self._run_q3()
@@ -416,7 +420,7 @@ class MongoPipeline(BasePipeline):
 
             # 2. Save Q1 (Daily Traffic)
             # Keys match exactly: log_date, status_code, request_count, total_bytes
-            loader.save_q1(self.run_id, results["q1_daily_traffic"])
+            loader.save_q1(self.run_id, self.PIPELINE_NAME, results["q1_daily_traffic"])
 
             # 3. Save Q2 (Top Resources)
             # Need to rename 'distinct_hosts' -> 'distinct_host_count'
@@ -428,7 +432,7 @@ class MongoPipeline(BasePipeline):
                     "total_bytes":         r["total_bytes"],
                     "distinct_host_count": r["distinct_hosts"]
                 })
-            loader.save_q2(self.run_id, q2_rows)
+            loader.save_q2(self.run_id, self.PIPELINE_NAME, q2_rows)
 
             # 4. Save Q3 (Hourly Errors)
             # Need to rename keys to match standard
@@ -442,7 +446,7 @@ class MongoPipeline(BasePipeline):
                     "error_rate":          r["error_rate"],
                     "distinct_error_hosts": r["distinct_error_hosts"]
                 })
-            loader.save_q3(self.run_id, q3_rows)
+            loader.save_q3(self.run_id, self.PIPELINE_NAME, q3_rows)
 
         logger.info("[%s] Results persisted to relational DB", self.PIPELINE_NAME)
 

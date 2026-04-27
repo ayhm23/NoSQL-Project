@@ -127,16 +127,15 @@ def fetch_q1(cursor, run_id: str) -> List[Dict]:
 
 def fetch_q2(cursor, run_id: str) -> List[Dict]:
     return _fetchall(cursor,
-        """SELECT rank_position, resource_path, request_count,
-                  total_bytes, distinct_host_count
+        """SELECT resource_path, request_count, total_bytes, distinct_hosts
            FROM q2_top_resources WHERE run_id = %s
-           ORDER BY rank_position""",
+           ORDER BY request_count DESC""",
         (run_id,))
 
 
 def fetch_q3(cursor, run_id: str) -> List[Dict]:
     return _fetchall(cursor,
-        """SELECT log_date, log_hour, error_request_count, total_request_count,
+        """SELECT log_date, log_hour, error_count, total_requests,
                   error_rate, distinct_error_hosts
            FROM q3_hourly_errors WHERE run_id = %s
            ORDER BY log_date, log_hour""",
@@ -171,11 +170,9 @@ def _col(text: str, width: int, align: str = "<") -> str:
 
 def _table(headers: List[str], rows: List[List[str]], col_widths: List[int]) -> str:
     lines = []
-    # Header
     header = "  ".join(_col(h, w) for h, w in zip(headers, col_widths))
     lines.append(f"{C.BOLD}{C.CYAN}{header}{C.RESET}")
     lines.append(_hr("─", sum(col_widths) + 2 * (len(col_widths) - 1)))
-    # Rows
     for i, row in enumerate(rows):
         line = "  ".join(_col(cell, w) for cell, w in zip(row, col_widths))
         colour = C.DIM if i % 2 == 1 else ""
@@ -240,7 +237,6 @@ def print_q1(rows: List[Dict]):
         [14, 8, 14, 16]
     ))
 
-    # Summary footer
     total_req   = sum(r["request_count"] for r in rows)
     total_bytes = sum(r["total_bytes"] for r in rows)
     print(f"\n  {C.DIM}Totals: {total_req:,} requests │ {_fmt_bytes(total_bytes)} transferred{C.RESET}\n")
@@ -256,13 +252,15 @@ def print_q2(rows: List[Dict]):
         print("  (no data)\n")
         return
 
+    # FIX: rank derived from loop position (rows already ordered by request_count DESC)
+    # FIX: distinct_hosts matches schema column name (not distinct_host_count)
     table_rows = [
-        [str(r["rank_position"]),
+        [str(i),
          str(r["resource_path"]),
          f"{r['request_count']:,}",
          _fmt_bytes(r["total_bytes"]),
-         f"{r['distinct_host_count']:,}"]
-        for r in rows
+         f"{r['distinct_hosts']:,}"]
+        for i, r in enumerate(rows, start=1)
     ]
     print(_table(
         ["#", "Resource Path", "Requests", "Bytes", "Unique Hosts"],
@@ -282,11 +280,13 @@ def print_q3(rows: List[Dict]):
         print("  (no data)\n")
         return
 
+    # FIX: error_count matches schema column name (not error_request_count)
+    # FIX: total_requests matches schema column name (not total_request_count)
     table_rows = [
         [str(r["log_date"]),
          f"{int(r['log_hour']):02d}:00",
-         f"{r['error_request_count']:,}",
-         f"{r['total_request_count']:,}",
+         f"{r['error_count']:,}",
+         f"{r['total_requests']:,}",
          f"{r['error_rate'] * 100:.2f}%",
          f"{r['distinct_error_hosts']:,}"]
         for r in rows
@@ -297,9 +297,9 @@ def print_q3(rows: List[Dict]):
         [14, 8, 12, 12, 12, 12]
     ))
 
-    # Summary footer
-    total_err   = sum(r["error_request_count"] for r in rows)
-    total_all   = sum(r["total_request_count"] for r in rows)
+    # FIX: use corrected column names in footer totals too
+    total_err    = sum(r["error_count"] for r in rows)
+    total_all    = sum(r["total_requests"] for r in rows)
     overall_rate = (total_err / total_all * 100) if total_all > 0 else 0
     print(f"\n  {C.DIM}Overall error rate: {overall_rate:.2f}% "
           f"({total_err:,} errors / {total_all:,} total){C.RESET}\n")
@@ -346,7 +346,7 @@ def generate_report(run_id: Optional[str] = None,
     print_banner()
 
     try:
-        # ── Comparison mode ─────────────────────────────────────────────────
+        # ── Comparison mode ──────────────────────────────────────────────────
         if compare:
             runs = []
             for p in compare:

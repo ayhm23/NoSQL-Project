@@ -180,25 +180,6 @@ def main():
     print(f"  Run ID:    {summary.get('run_id', '')}")
     print(f"{'─'*80}\n")
 
-    # Write run summary to DB
-    try:
-        from db.loader import ResultLoader
-        with ResultLoader() as loader:
-            loader.write_run_summary({
-                "run_id":            summary["run_id"],
-                "pipeline":          summary["pipeline"],
-                "executed_at":       pipeline.execution_ts,
-                "runtime_s":         summary.get("runtime_s"),
-                "total_lines":       summary.get("total_lines"),
-                "parsed_ok":         summary.get("parsed_ok"),
-                "malformed":         summary.get("malformed"),
-                "total_batches":     summary.get("total_batches"),
-                "non_empty_batches": summary.get("non_empty_batches"),
-                "avg_batch_size":    summary.get("avg_batch_size"),
-            })
-    except Exception as e:
-        logging.getLogger(__name__).warning("Could not write run summary: %s", e)
-
     if args.report:
         generate_report(run_id=summary["run_id"])
 
