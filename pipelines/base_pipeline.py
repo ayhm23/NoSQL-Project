@@ -88,18 +88,17 @@ class BasePipeline(abc.ABC):
         return self._end_ts - self._start_ts
 
     @property
-    def execution_ts(self) -> str:
-        """ISO-8601 timestamp of when the run started (UTC)."""
+    def execution_ts(self) -> datetime:
+        """The datetime when the run started (UTC)."""
         if self._start_ts is None:
-            return ""
+            return datetime.now(timezone.utc)
         # Convert perf_counter offset to wall time
         now_wall  = datetime.now(timezone.utc)
         now_perf  = time.perf_counter()
         delta     = now_perf - self._start_ts
-        run_start = datetime.fromtimestamp(
+        return datetime.fromtimestamp(
             now_wall.timestamp() - delta, tz=timezone.utc
         )
-        return run_start.isoformat()
 
     # ── Abstract methods ──────────────────────────────────────────────────────
 

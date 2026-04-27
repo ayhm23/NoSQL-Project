@@ -17,10 +17,11 @@ import argparse
 import logging
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import config
-from reporting.report import render_report
+from reporting.report import generate_report
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,18 +49,29 @@ def _get_pipeline_class(name: str):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _check_data_files(log_files) -> bool:
-    missing = [str(f) for f in log_files if not Path(f).exists()]
-    if missing:
-        print("ERROR: The following data files are missing:", file=sys.stderr)
-        for f in missing:
-            print(f"  {f}", file=sys.stderr)
-        print(
-            "\nDownload from the ITA archive:\n"
-            "  https://ita.ee.lbl.gov/html/contrib/NASA-HTTP.html\n"
-            "Place both .gz files in the data/ directory.",
-            file=sys.stderr,
-        )
-        return False
+    """Check if log files exist; if not, attempt to download them from the ITA archive."""
+    missing = [Path(f) for f in log_files if not Path(f).exists()]
+    if not missing:
+        return True
+
+    print(f"Data files missing. Attempting to download {len(missing)} files to {config.DATA_DIR}...")
+    config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    base_url = "http://ita.ee.lbl.gov/traces"
+
+    for path in missing:
+        fname = path.name
+        url = f"{base_url}/{fname}"
+        print(f"  ↓ Downloading {fname} ...", end="", flush=True)
+        try:
+            urllib.request.urlretrieve(url, path)
+            print(" Done.")
+        except Exception as e:
+            print(f" FAILED.")
+            print(f"ERROR: Could not download {url}: {e}", file=sys.stderr)
+            return False
+
+    print("All data files ready.\n")
     return True
 
 
@@ -132,7 +144,7 @@ def main():
         print(f"\n{'═'*80}")
         print(f"  NASA LOG ETL — Report  |  Pipeline filter: {args.pipeline}")
         print(f"{'═'*80}")
-        render_report(pipeline=args.pipeline, csv_out=args.csv)
+        generate_report(pipeline=args.pipeline)
         return 0
 
     # ── ETL mode ──────────────────────────────────────────────────────────────
@@ -188,7 +200,7 @@ def main():
         logging.getLogger(__name__).warning("Could not write run summary: %s", e)
 
     if args.report:
-        render_report(pipeline=args.pipeline, run_id=summary["run_id"], csv_out=args.csv)
+        generate_report(run_id=summary["run_id"])
 
     return 0
 

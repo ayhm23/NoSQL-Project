@@ -388,44 +388,63 @@ class MongoPipeline(BasePipeline):
 
     def _write_results(self, results: Dict[str, List[Dict]]) -> None:
         """
-        Tag every result row with metadata and persist to MySQL/PostgreSQL.
-        Batch ID is the MongoDB batch number (1-indexed); we tag every row
-        in a query result with batch_id=0 to signal "aggregated across all
-        batches" (the aggregation ran over the full collection, not per batch).
+        Persist aggregated ETL results to MySQL/PostgreSQL using the
+        compliant ResultLoader save_* methods.
         """
-        loader = ResultLoader()
-        exec_ts = self.execution_ts
+        # Calculate final runtime
+        completed_at = datetime.now(timezone.utc)
+        runtime_s = (completed_at - self.execution_ts).total_seconds()
 
-        metadata = {
-            "pipeline":    self.PIPELINE_NAME,
-            "run_id":      self.run_id,
-            "executed_at": exec_ts,
-            # batch_id=0 means this result covers all batches (post-ingestion)
-            "batch_id":    0,
+        # Prepare metadata for etl_runs
+        # stats are stored in self._batcher_stats
+        meta = {
+            "run_id":            self.run_id,
+            "pipeline":          self.PIPELINE_NAME,
+            "batch_size":        self.batch_size,
+            "total_records":     self._batcher_stats.parse_stats.total_lines,
+            "malformed_records": self._batcher_stats.parse_stats.malformed,
+            "num_batches":       self._batcher_stats.total_batches,
+            "avg_batch_size":    self._batcher_stats.avg_batch_size,
+            "runtime_seconds":   runtime_s,
+            "started_at":        self.execution_ts,
+            "completed_at":      completed_at
         }
 
-        # Q1
-        q1_rows = []
-        for row in results["q1_daily_traffic"]:
-            q1_rows.append({**metadata, **row})
-        loader.write_q1(q1_rows)
-        logger.info("Wrote %d Q1 rows to relational DB", len(q1_rows))
+        with ResultLoader() as loader:
+            # 1. Save run metadata first (FK constraint)
+            loader.save_run(meta)
 
-        # Q2
-        q2_rows = []
-        for row in results["q2_top_resources"]:
-            q2_rows.append({**metadata, **row})
-        loader.write_q2(q2_rows)
-        logger.info("Wrote %d Q2 rows to relational DB", len(q2_rows))
+            # 2. Save Q1 (Daily Traffic)
+            # Keys match exactly: log_date, status_code, request_count, total_bytes
+            loader.save_q1(self.run_id, results["q1_daily_traffic"])
 
-        # Q3
-        q3_rows = []
-        for row in results["q3_hourly_errors"]:
-            q3_rows.append({**metadata, **row})
-        loader.write_q3(q3_rows)
-        logger.info("Wrote %d Q3 rows to relational DB", len(q3_rows))
+            # 3. Save Q2 (Top Resources)
+            # Need to rename 'distinct_hosts' -> 'distinct_host_count'
+            q2_rows = []
+            for r in results["q2_top_resources"]:
+                q2_rows.append({
+                    "resource_path":       r["resource_path"],
+                    "request_count":       r["request_count"],
+                    "total_bytes":         r["total_bytes"],
+                    "distinct_host_count": r["distinct_hosts"]
+                })
+            loader.save_q2(self.run_id, q2_rows)
 
-        loader.close()
+            # 4. Save Q3 (Hourly Errors)
+            # Need to rename keys to match standard
+            q3_rows = []
+            for r in results["q3_hourly_errors"]:
+                q3_rows.append({
+                    "log_date":            r["log_date"],
+                    "log_hour":            r["log_hour"],
+                    "error_request_count": r["error_count"],
+                    "total_request_count": r["total_requests"],
+                    "error_rate":          r["error_rate"],
+                    "distinct_error_hosts": r["distinct_error_hosts"]
+                })
+            loader.save_q3(self.run_id, q3_rows)
+
+        logger.info("[%s] Results persisted to relational DB", self.PIPELINE_NAME)
 
         # Optionally drop the raw collection to free disk space
         if self._drop_after:
