@@ -1,7 +1,5 @@
 # ── Data files (large, not committed) ──────────────────────────────────────
-data/*.gz
-data/*.log
-data/*.txt
+data/
 
 # ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
