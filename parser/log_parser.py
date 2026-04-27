@@ -152,7 +152,10 @@ def parse_line(raw: str) -> Tuple[Optional[LogRecord], bool]:
         return None, True
 
     # Bytes
-    bytes_transferred = 0 if bytes_s == "-" else int(bytes_s)
+    try:
+        bytes_transferred = 0 if bytes_s == "-" else int(bytes_s)
+    except ValueError:
+        return None, True
 
     record = LogRecord(
         host=host,
