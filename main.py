@@ -37,7 +37,8 @@ def _get_pipeline_class(name: str):
     elif name == "pig":
         raise NotImplementedError("Pig pipeline not yet implemented")
     elif name == "mapreduce":
-        raise NotImplementedError("MapReduce pipeline not yet implemented")
+        from pipelines.mapreduce_pipeline import MapReducePipeline
+        return MapReducePipeline
     elif name == "hive":
         raise NotImplementedError("Hive pipeline not yet implemented")
     else:
