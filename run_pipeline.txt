@@ -1,0 +1,35 @@
+MongoDB Pipeline: 
+# 1. Activate venv
+source .venv/bin/activate
+
+# 2. Clean PostgreSQL
+psql -U postgres -h localhost -d etl_results -c "
+  TRUNCATE TABLE q3_hourly_errors CASCADE;
+  TRUNCATE TABLE q2_top_resources CASCADE;
+  TRUNCATE TABLE q1_daily_traffic CASCADE;
+  TRUNCATE TABLE etl_runs CASCADE;
+"
+
+# 3. Clean MongoDB
+mongosh --eval "db.nasa_logs.raw_logs.drop()"
+
+# 4. Run pipeline
+python main.py --pipeline mongodb --batch-size 50000 --report
+
+MapReduce Pipeline:
+# 1. Activate venv
+source .venv/bin/activate
+
+# 2. Clean PostgreSQL
+psql -U postgres -h localhost -d etl_results -c "
+  TRUNCATE TABLE q3_hourly_errors CASCADE;
+  TRUNCATE TABLE q2_top_resources CASCADE;
+  TRUNCATE TABLE q1_daily_traffic CASCADE;
+  TRUNCATE TABLE etl_runs CASCADE;
+"
+
+# 3. Clean HDFS
+hdfs dfs -rm -r -f /nasa_etl
+
+# 4. Run pipeline
+python main.py --pipeline mapreduce --batch-size 50000 --report
