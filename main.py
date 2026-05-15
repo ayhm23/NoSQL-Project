@@ -35,7 +35,8 @@ def _get_pipeline_class(name: str):
         from pipelines.mongo_pipeline import MongoPipeline
         return MongoPipeline
     elif name == "pig":
-        raise NotImplementedError("Pig pipeline not yet implemented")
+        from pipelines.pig_pipeline import PigPipeline
+        return PigPipeline
     elif name == "mapreduce":
         from pipelines.mapreduce_pipeline import MapReducePipeline
         return MapReducePipeline

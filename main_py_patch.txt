@@ -1,0 +1,10 @@
+# In main.py — inside _get_pipeline_class(), replace the pig stub:
+#
+# BEFORE:
+#   elif name == "pig":
+#       raise NotImplementedError("Pig pipeline not yet implemented")
+#
+# AFTER:
+    elif name == "pig":
+        from pipelines.pig_pipeline import PigPipeline
+        return PigPipeline

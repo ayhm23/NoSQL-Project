@@ -53,3 +53,11 @@ MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
 # Logging
 # ─────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# ─────────────────────────────────────────────
+# Pig / Hadoop
+# ─────────────────────────────────────────────
+HADOOP_HOME     = os.getenv("HADOOP_HOME", str(Path.home() / "hadoop-2.10.2"))
+PIG_HOME        = os.getenv("PIG_HOME",    str(Path.home() / "pig-0.17.0"))
+PIG_SCRIPTS_DIR = str(BASE_DIR / "pig")          # where .pig files live
+PIG_HDFS_BASE   = os.getenv("PIG_HDFS_BASE", "/nasa_etl")  # HDFS working root
