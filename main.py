@@ -98,6 +98,12 @@ def main():
         help="Pipeline engine to use",
     )
     parser.add_argument(
+        "--query", "-q",
+        choices=["q1", "q2", "q3", "all"],
+        default="all",
+        help="Select a specific query to run, or 'all' for all queries (default: all)",
+    )
+    parser.add_argument(
         "--batch-size", "-b",
         type=int,
         default=config.BATCH_SIZE,
@@ -159,6 +165,11 @@ def main():
     print(f"  NASA LOG ETL   Pipeline: {args.pipeline.upper()}   Batch size: {args.batch_size:,}")
     print(f"{'═'*80}\n")
 
+    if args.query == "all":
+        selected_queries = ["q1", "q2", "q3"]
+    else:
+        selected_queries = [args.query]
+
     # Pipeline-specific kwargs
     kwargs = {}
     if args.pipeline == "mongodb":
@@ -167,6 +178,7 @@ def main():
     pipeline = PipelineClass(
         log_files=config.LOG_FILES,
         batch_size=args.batch_size,
+        selected_queries=selected_queries,
         **kwargs,
     )
 

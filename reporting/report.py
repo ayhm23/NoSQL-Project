@@ -117,6 +117,12 @@ def fetch_all_runs(cursor, pipeline: Optional[str] = None) -> List[Dict]:
         "SELECT * FROM etl_runs ORDER BY started_at DESC")
 
 
+def fetch_malformed(cursor, run_id: str) -> Optional[Dict]:
+    rows = _fetchall(cursor,
+        "SELECT * FROM malformed_record_summary WHERE run_id = %s", (run_id,))
+    return rows[0] if rows else None
+
+
 def fetch_q1(cursor, run_id: str) -> List[Dict]:
     return _fetchall(cursor,
         """SELECT log_date, status_code, request_count, total_bytes
@@ -127,7 +133,7 @@ def fetch_q1(cursor, run_id: str) -> List[Dict]:
 
 def fetch_q2(cursor, run_id: str) -> List[Dict]:
     return _fetchall(cursor,
-        """SELECT resource_path, request_count, total_bytes, distinct_hosts
+        """SELECT resource_path, request_count, total_bytes, distinct_host_count
            FROM q2_top_resources WHERE run_id = %s
            ORDER BY request_count DESC""",
         (run_id,))
@@ -135,7 +141,7 @@ def fetch_q2(cursor, run_id: str) -> List[Dict]:
 
 def fetch_q3(cursor, run_id: str) -> List[Dict]:
     return _fetchall(cursor,
-        """SELECT log_date, log_hour, error_count, total_requests,
+        """SELECT log_date, log_hour, error_request_count, total_request_count,
                   error_rate, distinct_error_hosts
            FROM q3_hourly_errors WHERE run_id = %s
            ORDER BY log_date, log_hour""",
@@ -212,7 +218,43 @@ def print_run_meta(run: Dict):
     print(f"  {'Malformed records':<25} {C.RED if run['malformed_records'] > 0 else ''}"
           f"{run['malformed_records']:,}{C.RESET}")
     print(f"  {'Number of batches':<25} {run['num_batches']:,}")
+    # Auto-detect strategy
+    strategy = "file-per-batch" if run["num_batches"] == 2 else "fixed-size"
+    print(f"  {'Batch strategy':<25} {strategy}")
     print(f"  {'Avg batch size':<25} {_fmt_float(run['avg_batch_size'], 2)} records/batch")
+    print(f"  {'Total wall time':<25} {_fmt_float(run['runtime_seconds'], 3)}s  (file read → DB write, excl. report)")
+    print()
+
+
+def print_malformed(row: dict):
+    if not row:
+        return
+    import json
+    other = (
+        row.get("missing_brackets_count", 0) +
+        row.get("missing_quotes_count", 0) +
+        row.get("bad_bytes_count", 0) +
+        row.get("unknown_count", 0)
+    )
+    print(f"{C.BOLD}{'─' * 90}")
+    print("  MALFORMED RECORD SUMMARY")
+    print(f"{'─' * 90}{C.RESET}")
+    print(f"  {'Total malformed':<17} : {row.get('total_malformed', 0):,}")
+    print(f"  {'Empty lines':<17} : {row.get('empty_line_count', 0):,}")
+    print(f"  {'Bad timestamps':<17} : {row.get('bad_timestamp_count', 0):,}")
+    print(f"  {'Bad status codes':<17} : {row.get('bad_status_count', 0):,}")
+    print(f"  {'Truncated lines':<17} : {row.get('truncated_count', 0):,}")
+    print(f"  {'Other':<17} : {other:,}")
+
+    samples_str = row.get("sample_lines", "[]")
+    try:
+        samples = json.loads(samples_str)
+    except Exception:
+        samples = []
+
+    print(f"  {'Samples':<17} :")
+    for s in samples[:3]:
+        print(f"                    {s[:80]}")
     print()
 
 
@@ -253,13 +295,13 @@ def print_q2(rows: List[Dict]):
         return
 
     # FIX: rank derived from loop position (rows already ordered by request_count DESC)
-    # FIX: distinct_hosts matches schema column name (not distinct_host_count)
+    # FIX: distinct_host_count matches schema column name
     table_rows = [
         [str(i),
          str(r["resource_path"]),
          f"{r['request_count']:,}",
          _fmt_bytes(r["total_bytes"]),
-         f"{r['distinct_hosts']:,}"]
+         f"{r['distinct_host_count']:,}"]
         for i, r in enumerate(rows, start=1)
     ]
     print(_table(
@@ -280,13 +322,13 @@ def print_q3(rows: List[Dict]):
         print("  (no data)\n")
         return
 
-    # FIX: error_count matches schema column name (not error_request_count)
-    # FIX: total_requests matches schema column name (not total_request_count)
+    # FIX: error_request_count matches schema column name
+    # FIX: total_request_count matches schema column name
     table_rows = [
         [str(r["log_date"]),
          f"{int(r['log_hour']):02d}:00",
-         f"{r['error_count']:,}",
-         f"{r['total_requests']:,}",
+         f"{r['error_request_count']:,}",
+         f"{r['total_request_count']:,}",
          f"{r['error_rate'] * 100:.2f}%",
          f"{r['distinct_error_hosts']:,}"]
         for r in rows
@@ -298,8 +340,8 @@ def print_q3(rows: List[Dict]):
     ))
 
     # FIX: use corrected column names in footer totals too
-    total_err    = sum(r["error_count"] for r in rows)
-    total_all    = sum(r["total_requests"] for r in rows)
+    total_err    = sum(r["error_request_count"] for r in rows)
+    total_all    = sum(r["total_request_count"] for r in rows)
     overall_rate = (total_err / total_all * 100) if total_all > 0 else 0
     print(f"\n  {C.DIM}Overall error rate: {overall_rate:.2f}% "
           f"({total_err:,} errors / {total_all:,} total){C.RESET}\n")
@@ -374,6 +416,10 @@ def generate_report(run_id: Optional[str] = None,
 
         print_run_meta(run)
         rid = run["run_id"]
+
+        malformed = fetch_malformed(cursor, rid)
+        if malformed:
+            print_malformed(malformed)
 
         q1 = fetch_q1(cursor, rid)
         q2 = fetch_q2(cursor, rid)

@@ -18,9 +18,8 @@ LOG_FILES  = [
     DATA_DIR / "NASA_access_log_Aug95.gz",
 ]
 
-# ─────────────────────────────────────────────
-# Batching
-# ─────────────────────────────────────────────
+# Same batch size must be enforced across pipelines: when --batch-size is
+# supplied on the CLI, that value is passed to every pipeline constructor.
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 50_000))   # records per batch
 
 # ─────────────────────────────────────────────

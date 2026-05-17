@@ -94,14 +94,14 @@ class ResultLoader:
         num_batches, avg_batch_size, runtime_seconds, started_at, completed_at
 
     q1_daily_traffic:
-        run_id, pipeline, log_date, status_code, request_count, total_bytes
+        run_id, pipeline, query_name, log_date, status_code, request_count, total_bytes
 
     q2_top_resources:
-        run_id, pipeline, resource_path, request_count, total_bytes, distinct_hosts
+        run_id, pipeline, query_name, resource_path, request_count, total_bytes, distinct_host_count
 
     q3_hourly_errors:
-        run_id, pipeline, log_date, log_hour, error_count, total_requests,
-        error_rate, distinct_error_hosts
+        run_id, pipeline, query_name, log_date, log_hour,
+        error_request_count, total_request_count, error_rate, distinct_error_hosts
     """
 
     def __init__(self):
@@ -161,14 +161,15 @@ class ResultLoader:
         ph = self._ph
         sql = f"""
             INSERT INTO q1_daily_traffic
-                (run_id, pipeline, log_date, status_code, request_count, total_bytes)
+                (run_id, pipeline, query_name, log_date, status_code, request_count, total_bytes)
             VALUES
-                ({ph},{ph},{ph},{ph},{ph},{ph})
+                ({ph},{ph},{ph},{ph},{ph},{ph},{ph})
         """
         data = [
             (
                 run_id,
                 pipeline,
+                r.get("query_name", "q1"),
                 r["log_date"],
                 r["status_code"],
                 r["request_count"],
@@ -185,7 +186,7 @@ class ResultLoader:
         Bulk-insert Q2 Top Requested Resources results.
 
         Required keys per row:
-            resource_path, request_count, total_bytes, distinct_hosts
+            resource_path, request_count, total_bytes, distinct_host_count
         """
         if not rows:
             logger.warning("save_q2 called with empty rows list.")
@@ -194,18 +195,19 @@ class ResultLoader:
         ph = self._ph
         sql = f"""
             INSERT INTO q2_top_resources
-                (run_id, pipeline, resource_path, request_count, total_bytes, distinct_hosts)
+                (run_id, pipeline, query_name, resource_path, request_count, total_bytes, distinct_host_count)
             VALUES
-                ({ph},{ph},{ph},{ph},{ph},{ph})
+                ({ph},{ph},{ph},{ph},{ph},{ph},{ph})
         """
         data = [
             (
                 run_id,
                 pipeline,
+                r.get("query_name", "q2"),
                 r["resource_path"],
                 r["request_count"],
                 r["total_bytes"],
-                r.get("distinct_hosts", r.get("distinct_host_count", 0)),        # handle name variations
+                r.get("distinct_host_count", r.get("distinct_hosts", 0)),
             )
             for r in rows
         ]
@@ -218,7 +220,7 @@ class ResultLoader:
         Bulk-insert Q3 Hourly Error Analysis results.
 
         Required keys per row:
-            log_date, log_hour, error_count, total_requests,
+            log_date, log_hour, error_request_count, total_request_count,
             error_rate, distinct_error_hosts
         """
         if not rows:
@@ -228,19 +230,20 @@ class ResultLoader:
         ph = self._ph
         sql = f"""
             INSERT INTO q3_hourly_errors
-                (run_id, pipeline, log_date, log_hour,
-                 error_count, total_requests, error_rate, distinct_error_hosts)
+                (run_id, pipeline, query_name, log_date, log_hour,
+                 error_request_count, total_request_count, error_rate, distinct_error_hosts)
             VALUES
-                ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})
+                ({ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph},{ph})
         """
         data = [
             (
                 run_id,
                 pipeline,
+                r.get("query_name", "q3"),
                 r["log_date"],
                 r["log_hour"],
-                r.get("error_count", r.get("error_request_count", 0)),
-                r.get("total_requests", r.get("total_request_count", 0)),
+                r.get("error_request_count", r.get("error_count", 0)),
+                r.get("total_request_count", r.get("total_requests", 0)),
                 round(r["error_rate"], 6),
                 r["distinct_error_hosts"],
             )
@@ -249,6 +252,86 @@ class ResultLoader:
         self._executemany(sql, data)
         self._conn.commit()
         logger.info(f"Q3 saved: {len(rows)} rows  run_id={run_id}")
+
+    def save_batch_metadata(self, run_id: str, pipeline: str, batches: List[Dict[str, Any]]) -> None:
+        """
+        Bulk-insert one row per batch into batch_metadata.
+        Each dict must have: batch_id, batch_size_config, records_in_batch.
+        Optional: started_at, completed_at.
+        """
+        if not batches:
+            logger.warning("save_batch_metadata called with empty list.")
+            return
+
+        ph = self._ph
+        sql = f"""
+            INSERT INTO batch_metadata
+                (run_id, pipeline, batch_id, batch_size_config, records_in_batch, started_at, completed_at)
+            VALUES
+                ({ph},{ph},{ph},{ph},{ph},{ph},{ph})
+        """
+        data = [
+            (
+                run_id,
+                pipeline,
+                b["batch_id"],
+                b["batch_size_config"],
+                b["records_in_batch"],
+                _to_ts(b["started_at"]) if b.get("started_at") else None,
+                _to_ts(b["completed_at"]) if b.get("completed_at") else None,
+            )
+            for b in batches
+        ]
+        self._executemany(sql, data)
+        self._conn.commit()
+        logger.info(f"Batch metadata saved: {len(batches)} batches for run_id={run_id}")
+
+    def save_malformed(self, run_id: str, pipeline: str, summary: Dict[str, Any]) -> None:
+        """
+        Insert one row into malformed_record_summary.
+        The summary dict comes from MalformedHandler.to_db_summary().
+        Required keys: all keys from to_db_summary() above.
+        """
+        ph = self._ph
+        sql = f"""
+            INSERT INTO malformed_record_summary
+                (run_id, pipeline, total_malformed, empty_line_count,
+                 missing_brackets_count, missing_quotes_count,
+                 bad_timestamp_count, bad_status_count, bad_bytes_count,
+                 truncated_count, unknown_count, sample_lines)
+            VALUES
+                ({ph},{ph},{ph},{ph},
+                 {ph},{ph},
+                 {ph},{ph},{ph},
+                 {ph},{ph},{ph})
+        """
+        values = (
+            run_id,
+            pipeline,
+            summary["total_malformed"],
+            summary["empty_line_count"],
+            summary["missing_brackets_count"],
+            summary["missing_quotes_count"],
+            summary["bad_timestamp_count"],
+            summary["bad_status_count"],
+            summary["bad_bytes_count"],
+            summary["truncated_count"],
+            summary["unknown_count"],
+            summary["sample_lines"]
+        )
+        self._execute(sql, values)
+        self._conn.commit()
+        logger.info(f"[{pipeline}] Malformed record summary saved  run_id={run_id}")
+
+    def health_check(self) -> bool:
+        """Run SELECT 1. Return True on success, False on any exception."""
+        try:
+            self._cursor.execute("SELECT 1")
+            self._cursor.fetchone()
+            return True
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return False
 
     def close(self) -> None:
         """Close cursor and connection cleanly."""

@@ -232,12 +232,14 @@ class TestMongoPipelineWithMock:
         results = p._run_queries()
 
         mock_loader = MagicMock()
+        mock_loader.__enter__.return_value = mock_loader
+        mock_loader.__exit__.side_effect = lambda *args: mock_loader.close()
         with patch("pipelines.mongo_pipeline.ResultLoader", return_value=mock_loader):
             p._write_results(results)
 
-        mock_loader.write_q1.assert_called_once()
-        mock_loader.write_q2.assert_called_once()
-        mock_loader.write_q3.assert_called_once()
+        mock_loader.save_q1.assert_called_once()
+        mock_loader.save_q2.assert_called_once()
+        mock_loader.save_q3.assert_called_once()
         mock_loader.close.assert_called_once()
 
     def test_write_results_metadata_in_rows(self, tmp_path):
@@ -246,19 +248,19 @@ class TestMongoPipelineWithMock:
         p._load_data(100)
         results = p._run_queries()
 
-        captured_q1 = []
+        captured_args = []
         mock_loader = MagicMock()
-        mock_loader.write_q1.side_effect = lambda rows: captured_q1.extend(rows)
+        mock_loader.__enter__.return_value = mock_loader
+        mock_loader.__exit__.side_effect = lambda *args: mock_loader.close()
+        mock_loader.save_q1.side_effect = lambda rid, pipe, rows: captured_args.append((rid, pipe, rows))
 
         with patch("pipelines.mongo_pipeline.ResultLoader", return_value=mock_loader):
             p._write_results(results)
 
-        assert len(captured_q1) > 0
-        row = captured_q1[0]
-        assert row["pipeline"] == "mongodb"
-        assert row["run_id"] == p.run_id
-        assert "executed_at" in row
-        assert "batch_id" in row
+        assert len(captured_args) > 0
+        rid, pipe, rows = captured_args[0]
+        assert pipe == "mongodb"
+        assert rid == p.run_id
 
     def test_drop_after_true(self, tmp_path):
         lines = [_make_line()]

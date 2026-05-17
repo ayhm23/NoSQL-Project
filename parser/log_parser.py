@@ -23,6 +23,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Generator, Iterator, List, Optional, Tuple
 
+from parser.malformed_handler import MalformedHandler
+
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -220,6 +222,7 @@ class ParseStats:
 def stream_records(
     log_files: List[Path],
     stats: Optional[ParseStats] = None,
+    malformed_handler: Optional[MalformedHandler] = None,
 ) -> Generator[LogRecord, None, None]:
     """
     Yield LogRecord objects from one or more NASA log files in order.
@@ -228,15 +231,61 @@ def stream_records(
     Args:
         log_files: List of Path objects (plain text or .gz).
         stats:     Optional ParseStats instance; updated in-place.
+        malformed_handler: Optional MalformedHandler instance; updated in-place.
     """
     if stats is None:
         stats = ParseStats()
 
     for path in log_files:
         logger.info("Opening log file: %s", path)
+        file_name = path.name
         with _open_log(path) as fh:
+            line_number = 0
             for raw in fh:
+                line_number += 1
                 record, malformed = parse_line(raw)
                 stats.record(not malformed, raw)
+                if malformed and malformed_handler is not None:
+                    malformed_handler.record(
+                        raw_line=raw,
+                        line_number=line_number,
+                        file_name=file_name
+                    )
                 if record is not None:
                     yield record
+
+
+def stream_records_with_file_info(
+    log_files: List[Path],
+    stats: Optional[ParseStats] = None,
+    malformed_handler: Optional[MalformedHandler] = None,
+) -> Generator[Tuple[str, str, int, Optional[LogRecord], int], None, None]:
+    """
+    Yields tuples of (event_type, file_name, file_idx, record, line_number)
+    for fine-grained control, boundary checking, progress reporting, and checkpointing.
+    """
+    if stats is None:
+        stats = ParseStats()
+
+    for file_idx, path in enumerate(log_files, start=1):
+        file_name = path.name
+        yield ("file_start", file_name, file_idx, None, 0)
+
+        records_in_file = 0
+        with _open_log(path) as fh:
+            line_number = 0
+            for raw in fh:
+                line_number += 1
+                record, malformed = parse_line(raw)
+                stats.record(not malformed, raw)
+                if malformed and malformed_handler is not None:
+                    malformed_handler.record(
+                        raw_line=raw,
+                        line_number=line_number,
+                        file_name=file_name
+                    )
+                if record is not None:
+                    records_in_file += 1
+                    yield ("record", file_name, file_idx, record, line_number)
+
+        yield ("file_end", file_name, file_idx, None, records_in_file)

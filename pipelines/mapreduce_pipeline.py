@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional
 
 import config
 from db.loader import ResultLoader
-from parser.batcher import BatcherStats, generate_batches
+from parser import BatcherStats, generate_batches, generate_batches_v2, FixedSizeBatchStrategy, FileBatchStrategy, ProgressReporter
 from pipelines.base_pipeline import BasePipeline
 
 logger = logging.getLogger(__name__)
@@ -153,8 +153,18 @@ class MapReducePipeline(BasePipeline):
 
         # ── Step 1: Count batches using the shared batcher (for metadata) ──
         logger.info("Counting batches for metadata (batch_size=%d)...", batch_size)
-        for _batch_id, _records in generate_batches(
-            self.log_files, batch_size, batcher_stats
+        if batch_size in (0, -1):
+            strategy = FileBatchStrategy()
+        else:
+            strategy = FixedSizeBatchStrategy(batch_size)
+
+        progress = ProgressReporter(total_files=len(self.log_files))
+
+        for _batch_id, _records in generate_batches_v2(
+            self.log_files,
+            strategy,
+            batcher_stats,
+            progress=progress
         ):
             pass   # we only need the stats, not the records
 
@@ -381,21 +391,79 @@ class MapReducePipeline(BasePipeline):
             "completed_at":      exec_ts,   # updated below after write
         }
 
+        import json
         with ResultLoader() as loader:
             loader.save_run(meta)
             logger.info("Run metadata saved  run_id=%s", self.run_id)
 
+            # 1.5 Save batch metadata
+            batches = [
+                {
+                    "batch_id": b.batch_id,
+                    "batch_size_config": self.batch_size,
+                    "records_in_batch": b.record_count,
+                    "started_at": None,
+                    "completed_at": None
+                }
+                for b in bs.batch_stats
+            ]
+            loader.save_batch_metadata(self.run_id, self.PIPELINE_NAME, batches)
+
             if results.get("q1_daily_traffic") is not None:
-                loader.save_q1(self.run_id, self.PIPELINE_NAME, results["q1_daily_traffic"])
-                logger.info("Q1 saved: %d rows", len(results["q1_daily_traffic"]))
+                q1_rows = []
+                for r in results["q1_daily_traffic"]:
+                    q1_rows.append({
+                        "query_name":    "q1",
+                        "log_date":      r["log_date"],
+                        "status_code":   r["status_code"],
+                        "request_count": r["request_count"],
+                        "total_bytes":   r["total_bytes"]
+                    })
+                loader.save_q1(self.run_id, self.PIPELINE_NAME, q1_rows)
+                logger.info("Q1 saved: %d rows", len(q1_rows))
 
             if results.get("q2_top_resources") is not None:
-                loader.save_q2(self.run_id, self.PIPELINE_NAME, results["q2_top_resources"])
-                logger.info("Q2 saved: %d rows", len(results["q2_top_resources"]))
+                q2_rows = []
+                for r in results["q2_top_resources"]:
+                    q2_rows.append({
+                        "query_name":          "q2",
+                        "resource_path":       r["resource_path"],
+                        "request_count":       r["request_count"],
+                        "total_bytes":         r["total_bytes"],
+                        "distinct_host_count": r["distinct_hosts"]
+                    })
+                loader.save_q2(self.run_id, self.PIPELINE_NAME, q2_rows)
+                logger.info("Q2 saved: %d rows", len(q2_rows))
 
             if results.get("q3_hourly_errors") is not None:
-                loader.save_q3(self.run_id, self.PIPELINE_NAME, results["q3_hourly_errors"])
-                logger.info("Q3 saved: %d rows", len(results["q3_hourly_errors"]))
+                q3_rows = []
+                for r in results["q3_hourly_errors"]:
+                    q3_rows.append({
+                        "query_name":           "q3",
+                        "log_date":             r["log_date"],
+                        "log_hour":             r["log_hour"],
+                        "error_request_count":  r["error_count"],
+                        "total_request_count":  r["total_requests"],
+                        "error_rate":           r["error_rate"],
+                        "distinct_error_hosts": r["distinct_error_hosts"]
+                    })
+                loader.save_q3(self.run_id, self.PIPELINE_NAME, q3_rows)
+                logger.info("Q3 saved: %d rows", len(q3_rows))
+
+            loader.save_malformed(self.run_id, self.PIPELINE_NAME, {
+                "run_id": self.run_id,
+                "pipeline": self.PIPELINE_NAME,
+                "total_malformed": bs.parse_stats.malformed,
+                "empty_line_count": 0,
+                "missing_brackets_count": 0,
+                "missing_quotes_count": 0,
+                "bad_timestamp_count": 0,
+                "bad_status_count": 0,
+                "bad_bytes_count": 0,
+                "truncated_count": 0,
+                "unknown_count": bs.parse_stats.malformed,
+                "sample_lines": json.dumps(bs.parse_stats.malformed_examples[:5])
+            })
 
         logger.info("[mapreduce] Results persisted to relational DB")
 

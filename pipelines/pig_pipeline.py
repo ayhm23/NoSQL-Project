@@ -48,12 +48,19 @@ _NASA_TS_FORMAT = "%d/%b/%Y:%H:%M:%S"
 # Batch statistics
 # ─────────────────────────────────────────────────────────────────────────────
 
+class _PigBatchStatsSnapshot:
+    def __init__(self, batch_id: int, record_count: int):
+        self.batch_id = batch_id
+        self.record_count = record_count
+
+
 class _PigBatcherStats:
     def __init__(self, batch_size: int) -> None:
         self.batch_size        = batch_size
         self.total_records     = 0
         self.malformed_records = 0
         self.num_batches       = 0
+        self.batch_stats       = []
 
     @property
     def parsed_ok(self) -> int:
@@ -88,8 +95,8 @@ class PigPipeline(BasePipeline):
         "resource_path", "protocol", "status_code", "bytes_transferred",
     )
 
-    def __init__(self, log_files, batch_size: int) -> None:
-        super().__init__(log_files, batch_size)
+    def __init__(self, log_files, batch_size: int, **kwargs) -> None:
+        super().__init__(log_files, batch_size, **kwargs)
 
         _run_tag          = self.run_id[:8]
         self._hdfs_base   = f"{config.PIG_HDFS_BASE}/run_{_run_tag}"
@@ -186,6 +193,7 @@ class PigPipeline(BasePipeline):
                 return
             batch_num += 1
             stats.num_batches += 1
+            stats.batch_stats.append(_PigBatchStatsSnapshot(batch_num, len(batch)))
             self._upload_batch(batch, batch_num)
             logger.info("Batch %04d: %d records → HDFS", batch_num, len(batch))
             batch.clear()
@@ -346,15 +354,20 @@ class PigPipeline(BasePipeline):
         results: Dict[str, List[Dict]] = {}
         query_specs = [
             ("q1_daily_traffic.pig", f"{self._hdfs_output}/q1",
-             "q1_daily_traffic",     self._parse_q1),
+             "q1_daily_traffic",     self._parse_q1, "q1"),
             ("q2_top_resources.pig", f"{self._hdfs_output}/q2",
-             "q2_top_resources",     self._parse_q2),
+             "q2_top_resources",     self._parse_q2, "q2"),
             ("q3_hourly_errors.pig", f"{self._hdfs_output}/q3",
-             "q3_hourly_errors",     self._parse_q3),
+             "q3_hourly_errors",     self._parse_q3, "q3"),
         ]
 
-        for script, out_dir, result_key, parser_fn in query_specs:
+        for script, out_dir, result_key, parser_fn, q_name in query_specs:
+            if q_name not in self.selected_queries:
+                results[result_key] = None
+                continue
+
             logger.info("─── Running %s ───", script)
+            self._hdfs("-rm", "-r", "-f", out_dir)
             self._run_pig(
                 script,
                 {"input_dir": self._hdfs_input, "output_dir": out_dir},
@@ -481,12 +494,72 @@ class PigPipeline(BasePipeline):
 
         with ResultLoader() as loader:
             loader.save_run(run_meta)
-            loader.save_q1(self.run_id, self.PIPELINE_NAME,
-                           results.get("q1_daily_traffic", []))
-            loader.save_q2(self.run_id, self.PIPELINE_NAME,
-                           results.get("q2_top_resources", []))
-            loader.save_q3(self.run_id, self.PIPELINE_NAME,
-                           results.get("q3_hourly_errors", []))
+
+            # Save batch metadata
+            batches = [
+                {
+                    "batch_id": b.batch_id,
+                    "batch_size_config": self.batch_size,
+                    "records_in_batch": b.record_count,
+                    "started_at": None,
+                    "completed_at": None
+                }
+                for b in stats.batch_stats
+            ]
+            loader.save_batch_metadata(self.run_id, self.PIPELINE_NAME, batches)
+
+            if results.get("q1_daily_traffic") is not None:
+                q1_rows = []
+                for r in results["q1_daily_traffic"]:
+                    q1_rows.append({
+                        "query_name":    "q1",
+                        "log_date":      r["log_date"],
+                        "status_code":   r["status_code"],
+                        "request_count": r["request_count"],
+                        "total_bytes":   r["total_bytes"]
+                      })
+                loader.save_q1(self.run_id, self.PIPELINE_NAME, q1_rows)
+
+            if results.get("q2_top_resources") is not None:
+                q2_rows = []
+                for r in results["q2_top_resources"]:
+                    q2_rows.append({
+                        "query_name":          "q2",
+                        "resource_path":       r["resource_path"],
+                        "request_count":       r["request_count"],
+                        "total_bytes":         r["total_bytes"],
+                        "distinct_host_count": r["distinct_hosts"]
+                    })
+                loader.save_q2(self.run_id, self.PIPELINE_NAME, q2_rows)
+
+            if results.get("q3_hourly_errors") is not None:
+                q3_rows = []
+                for r in results["q3_hourly_errors"]:
+                    q3_rows.append({
+                        "query_name":           "q3",
+                        "log_date":             r["log_date"],
+                        "log_hour":             r["log_hour"],
+                        "error_request_count":  r["error_count"],
+                        "total_request_count":  r["total_requests"],
+                        "error_rate":           r["error_rate"],
+                        "distinct_error_hosts": r["distinct_error_hosts"]
+                    })
+                loader.save_q3(self.run_id, self.PIPELINE_NAME, q3_rows)
+
+            loader.save_malformed(self.run_id, self.PIPELINE_NAME, {
+                "run_id": self.run_id,
+                "pipeline": self.PIPELINE_NAME,
+                "total_malformed": stats.malformed_records,
+                "empty_line_count": 0,
+                "missing_brackets_count": 0,
+                "missing_quotes_count": 0,
+                "bad_timestamp_count": 0,
+                "bad_status_count": 0,
+                "bad_bytes_count": 0,
+                "truncated_count": 0,
+                "unknown_count": stats.malformed_records,
+                "sample_lines": "[]"
+            })
 
         logger.info("All results committed to DB  run_id=%s", self.run_id)
 

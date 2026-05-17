@@ -46,9 +46,10 @@ from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.errors import BulkWriteError
 
 import config
-from parser.batcher import BatcherStats, generate_batches
+from parser import BatcherStats, generate_batches, generate_batches_v2, FixedSizeBatchStrategy, ProgressReporter, BatchCheckpoint
 from pipelines.base_pipeline import BasePipeline
 from db.loader import ResultLoader
+from parser.malformed_handler import MalformedHandler
 
 logger = logging.getLogger(__name__)
 
@@ -280,17 +281,40 @@ class MongoPipeline(BasePipeline):
         """
         self._connect()
 
-        # Fresh collection for this run
-        logger.info("Dropping existing collection '%s'", self._mongo_coll)
-        self._coll.drop()
-        self._create_indexes()
+        checkpoint = BatchCheckpoint(self.run_id, self.PIPELINE_NAME)
+        existing = checkpoint.load()
+        resume_from_batch = 0
+        if existing:
+            resume_from_batch = existing.get("last_batch_id", 0)
+            logger.info("Resuming from batch %d", resume_from_batch)
+
+        # Fresh collection only when starting fresh
+        if resume_from_batch == 0:
+            logger.info("Dropping existing collection '%s'", self._mongo_coll)
+            self._coll.drop()
+            self._create_indexes()
+
+        handler = MalformedHandler(
+            max_in_memory=1000,
+            quarantine_path=f"malformed_{self.run_id[:8]}.jsonl"
+        )
+        self._malformed_handler = handler
 
         batcher_stats = BatcherStats()
         self._batcher_stats = batcher_stats
 
+        strategy = FixedSizeBatchStrategy(batch_size)
+        progress = ProgressReporter(total_files=len(self.log_files))
+
         total_inserted = 0
-        for batch_id, records in generate_batches(
-            self.log_files, batch_size, batcher_stats
+        for batch_id, records in generate_batches_v2(
+            self.log_files,
+            strategy,
+            batcher_stats,
+            malformed_handler=handler,
+            progress=progress,
+            checkpoint=checkpoint,
+            resume_from_batch=resume_from_batch
         ):
             docs = [r.to_dict() for r in records]
             docs_count = len(docs)
@@ -313,6 +337,9 @@ class MongoPipeline(BasePipeline):
             )
 
         self._total_batches_loaded = batcher_stats.total_batches
+        handler.flush_to_file()
+        checkpoint.delete()
+        logger.info("Malformed record summary: %s", handler.summary())
         logger.info(
             "Load complete — %d records in %d batches (malformed=%d)",
             total_inserted,
@@ -429,17 +456,38 @@ class MongoPipeline(BasePipeline):
             # 1. Save run metadata first (FK constraint)
             loader.save_run(meta)
 
+            # 1.5 Save batch metadata
+            batches = [
+                {
+                    "batch_id": bs.batch_id,
+                    "batch_size_config": self.batch_size,
+                    "records_in_batch": bs.record_count,
+                    "started_at": None,
+                    "completed_at": None
+                }
+                for bs in self._batcher_stats.batch_stats
+            ]
+            loader.save_batch_metadata(self.run_id, self.PIPELINE_NAME, batches)
+
             # 2. Save Q1 (Daily Traffic)
-            # Keys match exactly: log_date, status_code, request_count, total_bytes
             if results.get("q1_daily_traffic") is not None:
-                loader.save_q1(self.run_id, self.PIPELINE_NAME, results["q1_daily_traffic"])
+                q1_rows = []
+                for r in results["q1_daily_traffic"]:
+                    q1_rows.append({
+                        "query_name":    "q1",
+                        "log_date":      r["log_date"],
+                        "status_code":   r["status_code"],
+                        "request_count": r["request_count"],
+                        "total_bytes":   r["total_bytes"]
+                    })
+                loader.save_q1(self.run_id, self.PIPELINE_NAME, q1_rows)
 
             # 3. Save Q2 (Top Resources)
-            # Need to rename 'distinct_hosts' -> 'distinct_host_count'
             if results.get("q2_top_resources") is not None:
                 q2_rows = []
                 for r in results["q2_top_resources"]:
                     q2_rows.append({
+                        "query_name":          "q2",
                         "resource_path":       r["resource_path"],
                         "request_count":       r["request_count"],
                         "total_bytes":         r["total_bytes"],
@@ -448,19 +496,25 @@ class MongoPipeline(BasePipeline):
                 loader.save_q2(self.run_id, self.PIPELINE_NAME, q2_rows)
 
             # 4. Save Q3 (Hourly Errors)
-            # Need to rename keys to match standard
             if results.get("q3_hourly_errors") is not None:
                 q3_rows = []
                 for r in results["q3_hourly_errors"]:
                     q3_rows.append({
-                        "log_date":            r["log_date"],
-                        "log_hour":            r["log_hour"],
-                        "error_request_count": r["error_count"],
-                        "total_request_count": r["total_requests"],
-                        "error_rate":          r["error_rate"],
+                        "query_name":           "q3",
+                        "log_date":             r["log_date"],
+                        "log_hour":             r["log_hour"],
+                        "error_request_count":  r["error_count"],
+                        "total_request_count":  r["total_requests"],
+                        "error_rate":           r["error_rate"],
                         "distinct_error_hosts": r["distinct_error_hosts"]
                     })
                 loader.save_q3(self.run_id, self.PIPELINE_NAME, q3_rows)
+
+            loader.save_malformed(
+                self.run_id,
+                self.PIPELINE_NAME,
+                self._malformed_handler.to_db_summary(self.run_id, self.PIPELINE_NAME)
+            )
 
         logger.info("[%s] Results persisted to relational DB", self.PIPELINE_NAME)
 

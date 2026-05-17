@@ -54,9 +54,9 @@ class BasePipeline(abc.ABC):
         logger.info(
             "[%s] Starting pipeline run_id=%s", self.PIPELINE_NAME, self.run_id
         )
-        self._start_ts = time.perf_counter()
 
         logger.info("[%s] Phase 1 — Load data", self.PIPELINE_NAME)
+        self._phase_load_start()   # sets _start_ts
         self._load_data(self.batch_size)
 
         logger.info("[%s] Phase 2 — Run queries", self.PIPELINE_NAME)
@@ -65,7 +65,9 @@ class BasePipeline(abc.ABC):
         logger.info("[%s] Phase 3 — Write results to DB", self.PIPELINE_NAME)
         self._write_results(results)
 
-        self._end_ts = time.perf_counter()
+        self._end_ts = time.perf_counter()   # set AFTER last DB write
+        # Report generation (generate_report()) happens AFTER run() returns, so
+        # it is already excluded from runtime.
         elapsed = self.get_runtime()
 
         summary = {
@@ -81,6 +83,10 @@ class BasePipeline(abc.ABC):
             self.PIPELINE_NAME, elapsed, summary,
         )
         return summary
+
+    def _phase_load_start(self) -> None:
+        """Sets _start_ts at the exact beginning of log file reading/parsing."""
+        self._start_ts = time.perf_counter()
 
     def get_runtime(self) -> float:
         """Wall-clock seconds from first file read to last DB write."""
