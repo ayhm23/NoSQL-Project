@@ -129,10 +129,12 @@ class MapReducePipeline(BasePipeline):
         hdfs_input: str = _HDFS_INPUT,
         hdfs_output: str = _HDFS_OUTPUT,
         keep_hdfs: bool = False,
+        **kwargs,
     ):
         super().__init__(
             log_files  = log_files  or config.LOG_FILES,
             batch_size = batch_size or config.BATCH_SIZE,
+            **kwargs,
         )
         self._streaming_jar = streaming_jar or _find_streaming_jar()
         self._hdfs_input    = hdfs_input
@@ -197,9 +199,9 @@ class MapReducePipeline(BasePipeline):
         """Run Q1, Q2, Q3 as separate Hadoop Streaming jobs."""
         results: Dict[str, List[Dict]] = {}
 
-        results["q1_daily_traffic"]  = self._run_q1()
-        results["q2_top_resources"]  = self._run_q2()
-        results["q3_hourly_errors"]  = self._run_q3()
+        results["q1_daily_traffic"]  = self._run_q1() if "q1" in self.selected_queries else None
+        results["q2_top_resources"]  = self._run_q2() if "q2" in self.selected_queries else None
+        results["q3_hourly_errors"]  = self._run_q3() if "q3" in self.selected_queries else None
 
         return results
 
@@ -383,14 +385,17 @@ class MapReducePipeline(BasePipeline):
             loader.save_run(meta)
             logger.info("Run metadata saved  run_id=%s", self.run_id)
 
-            loader.save_q1(self.run_id, self.PIPELINE_NAME, results["q1_daily_traffic"])
-            logger.info("Q1 saved: %d rows", len(results["q1_daily_traffic"]))
+            if results.get("q1_daily_traffic") is not None:
+                loader.save_q1(self.run_id, self.PIPELINE_NAME, results["q1_daily_traffic"])
+                logger.info("Q1 saved: %d rows", len(results["q1_daily_traffic"]))
 
-            loader.save_q2(self.run_id, self.PIPELINE_NAME, results["q2_top_resources"])
-            logger.info("Q2 saved: %d rows", len(results["q2_top_resources"]))
+            if results.get("q2_top_resources") is not None:
+                loader.save_q2(self.run_id, self.PIPELINE_NAME, results["q2_top_resources"])
+                logger.info("Q2 saved: %d rows", len(results["q2_top_resources"]))
 
-            loader.save_q3(self.run_id, self.PIPELINE_NAME, results["q3_hourly_errors"])
-            logger.info("Q3 saved: %d rows", len(results["q3_hourly_errors"]))
+            if results.get("q3_hourly_errors") is not None:
+                loader.save_q3(self.run_id, self.PIPELINE_NAME, results["q3_hourly_errors"])
+                logger.info("Q3 saved: %d rows", len(results["q3_hourly_errors"]))
 
         logger.info("[mapreduce] Results persisted to relational DB")
 

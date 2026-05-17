@@ -35,9 +35,10 @@ class BasePipeline(abc.ABC):
     #: Human-readable name used as the `pipeline` column in result tables.
     PIPELINE_NAME: str = "base"
 
-    def __init__(self, log_files: List[Path], batch_size: int):
+    def __init__(self, log_files: List[Path], batch_size: int, **kwargs):
         self.log_files  = log_files
         self.batch_size = batch_size
+        self.selected_queries = kwargs.get("selected_queries", ["q1", "q2", "q3"])
         self.run_id     = str(uuid.uuid4())
         self._start_ts: Optional[float] = None
         self._end_ts:   Optional[float] = None

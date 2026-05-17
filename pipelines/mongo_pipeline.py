@@ -205,10 +205,12 @@ class MongoPipeline(BasePipeline):
         mongo_db:    str = None,
         mongo_coll:  str = None,
         drop_after:  bool = True,
+        **kwargs,
     ):
         super().__init__(
             log_files  = log_files  or config.LOG_FILES,
             batch_size = batch_size or config.BATCH_SIZE,
+            **kwargs,
         )
         self._mongo_uri  = mongo_uri  or config.MONGO_URI
         self._mongo_db   = mongo_db   or config.MONGO_DB
@@ -325,33 +327,42 @@ class MongoPipeline(BasePipeline):
         results: Dict[str, List[Dict]] = {}
 
         # Q1
-        logger.info("Running Q1 — Daily Traffic Summary")
-        results["q1_daily_traffic"] = list(
-            self._coll.aggregate(
-                QUERY_Q1_DAILY_TRAFFIC,
-                allowDiskUse=True,
+        if "q1" in self.selected_queries:
+            logger.info("Running Q1 — Daily Traffic Summary")
+            results["q1_daily_traffic"] = list(
+                self._coll.aggregate(
+                    QUERY_Q1_DAILY_TRAFFIC,
+                    allowDiskUse=True,
+                )
             )
-        )
-        logger.info("Q1 returned %d rows", len(results["q1_daily_traffic"]))
+            logger.info("Q1 returned %d rows", len(results["q1_daily_traffic"]))
+        else:
+            results["q1_daily_traffic"] = None
 
         # Q2
-        logger.info("Running Q2 — Top 20 Resources")
-        results["q2_top_resources"] = list(
-            self._coll.aggregate(
-                QUERY_Q2_TOP_RESOURCES,
-                allowDiskUse=True,
+        if "q2" in self.selected_queries:
+            logger.info("Running Q2 — Top 20 Resources")
+            results["q2_top_resources"] = list(
+                self._coll.aggregate(
+                    QUERY_Q2_TOP_RESOURCES,
+                    allowDiskUse=True,
+                )
             )
-        )
-        logger.info("Q2 returned %d rows", len(results["q2_top_resources"]))
+            logger.info("Q2 returned %d rows", len(results["q2_top_resources"]))
 
-        # debug
-        if results["q2_top_resources"]:
-            logger.info("Q2 sample row keys: %s", list(results["q2_top_resources"][0].keys()))
+            # debug
+            if results["q2_top_resources"]:
+                logger.info("Q2 sample row keys: %s", list(results["q2_top_resources"][0].keys()))
+        else:
+            results["q2_top_resources"] = None
 
         # Q3 — two-pass, Python-side join
-        logger.info("Running Q3 — Hourly Error Analysis")
-        results["q3_hourly_errors"] = self._run_q3()
-        logger.info("Q3 returned %d rows", len(results["q3_hourly_errors"]))
+        if "q3" in self.selected_queries:
+            logger.info("Running Q3 — Hourly Error Analysis")
+            results["q3_hourly_errors"] = self._run_q3()
+            logger.info("Q3 returned %d rows", len(results["q3_hourly_errors"]))
+        else:
+            results["q3_hourly_errors"] = None
 
         return results
 
@@ -420,33 +431,36 @@ class MongoPipeline(BasePipeline):
 
             # 2. Save Q1 (Daily Traffic)
             # Keys match exactly: log_date, status_code, request_count, total_bytes
-            loader.save_q1(self.run_id, self.PIPELINE_NAME, results["q1_daily_traffic"])
+            if results.get("q1_daily_traffic") is not None:
+                loader.save_q1(self.run_id, self.PIPELINE_NAME, results["q1_daily_traffic"])
 
             # 3. Save Q2 (Top Resources)
             # Need to rename 'distinct_hosts' -> 'distinct_host_count'
-            q2_rows = []
-            for r in results["q2_top_resources"]:
-                q2_rows.append({
-                    "resource_path":       r["resource_path"],
-                    "request_count":       r["request_count"],
-                    "total_bytes":         r["total_bytes"],
-                    "distinct_host_count": r["distinct_hosts"]
-                })
-            loader.save_q2(self.run_id, self.PIPELINE_NAME, q2_rows)
+            if results.get("q2_top_resources") is not None:
+                q2_rows = []
+                for r in results["q2_top_resources"]:
+                    q2_rows.append({
+                        "resource_path":       r["resource_path"],
+                        "request_count":       r["request_count"],
+                        "total_bytes":         r["total_bytes"],
+                        "distinct_host_count": r["distinct_hosts"]
+                    })
+                loader.save_q2(self.run_id, self.PIPELINE_NAME, q2_rows)
 
             # 4. Save Q3 (Hourly Errors)
             # Need to rename keys to match standard
-            q3_rows = []
-            for r in results["q3_hourly_errors"]:
-                q3_rows.append({
-                    "log_date":            r["log_date"],
-                    "log_hour":            r["log_hour"],
-                    "error_request_count": r["error_count"],
-                    "total_request_count": r["total_requests"],
-                    "error_rate":          r["error_rate"],
-                    "distinct_error_hosts": r["distinct_error_hosts"]
-                })
-            loader.save_q3(self.run_id, self.PIPELINE_NAME, q3_rows)
+            if results.get("q3_hourly_errors") is not None:
+                q3_rows = []
+                for r in results["q3_hourly_errors"]:
+                    q3_rows.append({
+                        "log_date":            r["log_date"],
+                        "log_hour":            r["log_hour"],
+                        "error_request_count": r["error_count"],
+                        "total_request_count": r["total_requests"],
+                        "error_rate":          r["error_rate"],
+                        "distinct_error_hosts": r["distinct_error_hosts"]
+                    })
+                loader.save_q3(self.run_id, self.PIPELINE_NAME, q3_rows)
 
         logger.info("[%s] Results persisted to relational DB", self.PIPELINE_NAME)
 
